@@ -1,0 +1,11 @@
+apify ~= 1.7.0
+selenium ~= 4.14.0
+beautifulsoup4 ~= 4.11.2
+requests ~= 2.28.2
+flask
+Openai
+dicttoxml
+replicate
+pyautogui
+json_repair
+pyftpdlib
