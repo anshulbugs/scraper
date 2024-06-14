@@ -55,22 +55,14 @@ async def retry_async(func, *args, max_retries=2, retry_delay=1):
             else:
                 # logger.error("Max retries reached. Returning fallback response.")
                 print("Max retries reached. Returning fallback response.")
-                return {
-                    "job_description": {"company_detail": "", "job_summary": "", "responsibilities": "", "qualifications": ""},
-                    "contract_type": "",
-                    "category": "",
-                    "working_type": "",
-                    "salary": "",
-                    "geo_lat": "",
-                    "geo_long": "",
-                    "zip_code": ""
-                }
+                return None
 
     
 async def extract_job_description_with_openai(data):
     job_description = data['position_description']
     location = data['location']
-    os.environ["REPLICATE_API_TOKEN"] = "r8_Dnn5HXRf8ffsWwNcIa9mU96Nz5r3WMh2x7VmO"
+    os.environ["REPLICATE_API_TOKEN"] = "r8_D3x5z2TGZBqFU24BgBiO0cf7YfvcYC14cjUGo"
+    
     prompt = f"""Extract the job description in a very organised manner. It should have some detail about the company(in few sentences), some detail about the role(in few sentences), responsibilities(all of them as strings only with line breaks), and qualifications (all of them as strings only with line breaks). Additionally. The job description provided is: '{job_description}'. Return the extracted information in a JSON object with the following keys: job_description(it should have keys company_detail,job_summary,responsibilities and qualifications and they should be empty string if no such information is present), contract_type, category, working_type,salary, geo_lat, geo_long and zip_code. Ensure that each key is present in the JSON object even if no information is available. If any detail cannot be fetched from the job description, assign an empty string to the corresponding key. The contract_type should indicate whether the job is permanent or contract. The category should specify the industry of the job (e.g., finance, healthcare). The working_type should denote if the job is remote, onsite, or hybrid.The geo_lat, geo_long and zip_code should be obtained from the {location}. Please provide the output only in the requested JSON format,you do not need to mention that it's json just give the response in json directly. Please ensure the format I can parse into json, ensure you use double quotes and other quotes inside the text be escaped. Please ensure it mandatorily have all the keys company_detail,job_summary,responsibilities and qualifications ,contract_type, category, working_type,salary, geo_lat, geo_long, zip_code. Take care.
 
 Example output:
@@ -109,15 +101,21 @@ Example output:
         except Exception as e:
             print(f"An error occurred: {e}")
         # print("prediction",prediction)
-        result = ''.join(prediction)
+        result = ""
+        if isinstance(prediction, list):
+            result = ''.join(prediction)
+        else:
+            strData = str(prediction)
+            result = ''.join(strData)
         start_index = result.find('{')
         end_index = result.rfind('}') + 1
-        
         if start_index != -1 and end_index != -1:
             json_str = result[start_index:end_index]
             repaired_json_str = repair_json(json_str)
             parsed_json = json.loads(repaired_json_str,strict=False)
-            data = [{
+            if isinstance(parsed_json, list):
+                parsed_json = parsed_json[0]
+            data_final = [{
             "uniqueId": data['unique_id'],
             "title": data['position_name'],
             "description": parsed_json.get('job_description', ''),
@@ -141,15 +139,15 @@ Example output:
             "expirydate": "",
             "jobserviceportals": data['job_service_portals']
             }]
-            write_to_file(data, 'processed_job_data.json', file_format='json')
-
-
-            return parsed_json
+            write_to_file(data_final, 'processed_job_data.json', file_format='json')
+            print("written for id",data['unique_id'])
+            return data
         else:
             raise ValueError("No JSON object found in the response")
     except Exception as e:
         # logger.error(f"Error extracting job description: {e}")
         print(f"Error extracting job description: {e}")
+        print("parsed_json",parsed_json)
         raise e
 
 def calculate_post_date(post_days):
@@ -328,7 +326,7 @@ async def handle_browser_instance(urls, proxy, job_data_list):
                 # logger.error(f"Failed to launch Chrome browser with proxy: {e}")
                 print(f"Failed to launch Chrome browser with proxy: {e}")
 
-                time.sleep(5)  # Wait before retrying
+                time.sleep(2)  # Wait before retrying
 
         for url in urls:
             while True:
@@ -338,17 +336,15 @@ async def handle_browser_instance(urls, proxy, job_data_list):
                     sem = asyncio.Semaphore(RATE_LIMIT)
                     try : 
                         async with sem:
-                            print("sem",sem)
                             tasks = []
                             for data in raw_data:
                                 # print("Position Description:", data['positionDescription'])
-                                print("Location:", data['location'])
-                                print("---")  # Separator for readability
+                                # print("Location:", data['location'])
+                                # print("---")  # Separator for readability
                                 task = extract_job_description_with_openai_async(data, sem)
                                 tasks.append(task)
                             processed_data = await asyncio.gather(*tasks)
-                        print("here2")
-                        print("processed_data", processed_data)
+                        # print("processed_data", processed_data)
                     except Exception as e:
                         print(f"Error processing with replicate: {e}")
                         continue
