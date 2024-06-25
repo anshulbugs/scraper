@@ -13,7 +13,16 @@ def update_last_processed_times(filename, timestamp):
     except (FileNotFoundError, json.JSONDecodeError):
         times = {}
     
-    times[filename] = timestamp.isoformat()
+    if filename in times:
+        times[filename] = {
+            'last': timestamp.isoformat(),
+            'second_last': times[filename]['last']
+        }
+    else:
+        times[filename] = {
+            'last': timestamp.isoformat(),
+            'second_last': None
+        }
     
     with open('last_processed_times.json', 'w', encoding='utf-8') as f:
         json.dump(times, f)
@@ -21,7 +30,10 @@ def update_last_processed_times(filename, timestamp):
 def get_last_processed_times():
     try:
         with open('last_processed_times.json', 'r', encoding='utf-8') as f:
-            return {k: datetime.fromisoformat(v) for k, v in json.load(f).items()}
+            times = json.load(f)
+            return {k: {'last': datetime.fromisoformat(v['last']),
+                        'second_last': datetime.fromisoformat(v['second_last']) if v['second_last'] else None}
+                    for k, v in times.items()}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
@@ -42,27 +54,18 @@ def get_current_batch():
             return lines[-1].strip()
     return "batch1"
 
-def move_old_xml_files(old_batch):
+def move_old_xml_files(filename,old_batch):
     alldata_dir = os.path.join('xmlData', 'alldata')
     os.makedirs(alldata_dir, exist_ok=True)
     
     batch_dir = os.path.join(alldata_dir, old_batch)
     os.makedirs(batch_dir, exist_ok=True)
-    
-    last_processed_times = get_last_processed_times()
-    
-    for filename in os.listdir('xmlData'):
-        file_path = os.path.join('xmlData', filename)
-        if os.path.isfile(file_path) and filename.endswith('.xml'):
-            last_processed_time = last_processed_times.get(filename)
-            if last_processed_time:
-                file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                if file_mod_time <= last_processed_time:
-                    shutil.move(file_path, os.path.join(batch_dir, filename))
-                    remove_processed_time(filename)
-                    print(f"Moved {filename} to {old_batch}")
+    file_path = os.path.join('xmlData', filename)
+    if os.path.isfile(file_path):
+        shutil.move(file_path, os.path.join(batch_dir, filename))
+        print(f"Moved {filename} to {old_batch}")
 
-def process_data():
+def process_data(old_batch):
     
     # Read the last processed unique ID
     last_processed_id = ''
@@ -84,6 +87,7 @@ def process_data():
     if not new_data:
         print("No new data to proces.")
         return
+    modified_files = set()
 
     # Update the last processed ID
     with open('last_processed.txt', 'w') as f:
@@ -118,17 +122,20 @@ def process_data():
                 f.write(xml_data.decode('utf-8') + '\n')
                 # if mode == 'w':
                 #     f.write('</jobs>')
-            update_last_processed_times(filename, datetime.now())
-    with open('last_processed_timestamp.txt', 'w') as f:
-        f.write(datetime.now().isoformat())
+            modified_files.add(filepath)
+        # Move files that were not modified
+    for filename in os.listdir('xmlData'):
+        filepath = os.path.join('xmlData', filename)
+        if os.path.isfile(filepath) and filepath not in modified_files:
+            move_old_xml_files(filename,old_batch)
 
 def main():
     last_checked_batch = get_current_batch()
 
     while True:
-        process_data()
+        process_data(last_checked_batch)
         current_batch = get_current_batch()
-        move_old_xml_files(last_checked_batch)
+        # move_old_xml_files(last_checked_batch)
         
         if current_batch != last_checked_batch:
             last_checked_batch = current_batch
