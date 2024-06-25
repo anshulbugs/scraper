@@ -327,6 +327,7 @@ async def auto_scroll(page,selector):
 async def scrape_page(url, context, location_data):
     # page = await context.new_page()
     page = await context.new_page()
+    await context.route('**/*.{png,jpg,jpeg,gif,webp,css,woff,woff2,ttf,svg,eot,ico,mp4,webm,ogg,mp3,wav,pdf,doc,docx,xls,xlsx,ppt,pptx}', lambda route: route.abort())
     try:
         # logger.info(f"Scraping {url}")
         print(f"Scraping {url}")
@@ -366,6 +367,8 @@ async def scrape_page(url, context, location_data):
 
         await page.close()
         raise e
+    finally :
+        await page.close()
 
     # await page.close()
 async def handle_browser_instance(urls, proxy, location_data):
@@ -395,8 +398,12 @@ async def handle_browser_instance(urls, proxy, location_data):
                 )
                 # iphone = Playwright.devices["iPhone 6"]
                 # context = await browser.new_context(**iphone)
-                context = await browser.new_context()
-
+                context = await browser.new_context(bypass_csp=True,
+    viewport={'width': 800, 'height': 600})
+                main_page = await context.new_page()
+                main_page.route(re.compile(r"\.(jpg|png|svg)$"), 
+		lambda route: route.abort()) 
+                await main_page.goto('about:blank')
                 break
             except Exception as e:
                 # logger.error(f"Failed to launch Chrome browser with proxy: {e}")
@@ -409,6 +416,7 @@ async def handle_browser_instance(urls, proxy, location_data):
                 try:
                     raw_data = await scrape_page(url, context, location_data)
                     write_to_file(raw_data, 'raw_job_data.json', file_format='json')
+                    print("Saved for",url)
                     # sem = asyncio.Semaphore(RATE_LIMIT)
                     # try : 
                     #     # async with sem:
@@ -447,7 +455,10 @@ async def handle_browser_instance(urls, proxy, location_data):
                                     'password': proxy['password']
                                 }
                             )
-                            context = await browser.new_context()
+                            context = await browser.new_context(bypass_csp=True,
+    viewport={'width': 800, 'height': 600})
+                            main_page = await context.new_page()
+                            await main_page.goto('about:blank')
                             break
                         except Exception as e:
                             # logger.error(f"Failed to re-launch Chrome browser with proxy: {e}")
