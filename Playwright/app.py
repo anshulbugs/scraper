@@ -11,6 +11,7 @@ import replicate
 import os
 from json_repair import repair_json
 import re
+from urllib.parse import unquote
 # Configure logging
 # logging.basicConfig(level=logging.INFO)
 # logger = logging.getLogger(__name__)
@@ -50,8 +51,18 @@ def get_latitude_longitude(city, state, location_data):
     # Search for the city and state in the location data to get latitude and longitude
     for location in location_data:
         if location['name'].lower() == city.lower() and location['state_code'].upper() == state.upper():
-            return location['latitude'], location['longitude']
-    return None, None
+            return location['latitude'], location['longitude'],location['state_name']
+    return None, None , None
+
+def extract_location_info(url, location_data):
+    query = unquote(re.search(r'q=(.+?)&', url).group(1))
+    city, state_name = query.split('+')[-2:]
+    
+    for loc in location_data:
+        if loc['state_name'].lower() == state_name.lower() and loc['name'].lower() == city.lower() :
+            return loc['state_code'],loc['name']
+    
+    return None,None
 
 
 async def extract_job_description_with_openai_async(data, semaphore, max_retries=3, retry_delay=2):
@@ -174,49 +185,54 @@ def calculate_post_date(post_days):
         return (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
     return datetime.now().strftime('%Y-%m-%d')
 
-async def process_job_elements(job_elements,location_data):
+async def process_job_elements(job_elements,location_data,url):
+    print(f"Number of job elements: {len(job_elements)}")
     global id_count
     raw_job_data = []
+    state_code, city_info = extract_location_info(url,location_data)
+    # print("state_code",state_code)
     for listing in job_elements:
         try : 
-            position_name = listing.find('h2', class_='KLsYvd').text.strip()
-            company_name = listing.find('div', class_='nJlQNd sMzDkb').text.strip()
-            location = listing.find('div', class_='tJ9zfc').find_all('div')[1].text.strip()
+            position_name = listing.find('h1', class_='LZAQDf cS4Vcb-pGL6qe-IRrXtf').text.strip()
+            company_name = listing.find('div', class_='UxTHrf').text.strip()
+            location = listing.find('div', class_='waQ7qe').text.split('•')[1].strip()
             if location :
                 location_parts = location.split(", ")
             city = location_parts[0] if location_parts else ""
             state = clean_state_name(location_parts[1]) if len(location_parts) > 1 else ""
+            state = state.upper()
             country = location_parts[2] if len(location_parts) > 2 else ""
-            position_description_span = listing.find('span', class_='HBvzbc')
-            inner_span = listing.find('span', class_='WbZuDe')
+            position_description_span = listing.find('span', class_='hkXmid')
+            inner_span = listing.find('span', class_='us2QZb')
             # Get text from both spans
             position_description = ""
             if position_description_span:
                 position_description += position_description_span.text.strip() + " "
             inner_span_count = 0
-            # if inner_span :
-            #     position_description += inner_span.text.strip()
+            if inner_span :
+                position_description += inner_span.text.strip()
             #     print("position_description with inner",position_description)
-            employment_span = listing.find('span', {'aria-label': lambda x: x and 'Employment type' in x})
-            contract_time = ""
-            if employment_span:
-                contract_time = employment_span.text.strip()
-
-            post_date_span = listing.find('span', {'aria-label': lambda x: x and 'Posted ' in x})
+            spans  = listing.find_all('span', {'class': 'RcZtZb'})
+            contract_time  = ""
             post_days = ""
-            if post_date_span:
-                post_days = post_date_span.text.strip()
+            salary = ""
+            for span in spans :
+                if span and any(keyword in span.text for keyword in ['Full-time', 'Part-time', 'Contractor', 'Internship']):
+                        contract_time  = span.text.strip()
+                        print("contract_time",contract_time)
+                
+                elif span and 'ago' in span.text:
+                    post_days = span.text.strip()
+                    print("post_days",post_days)
 
+                
+                elif span and '$' in span.text:
+                    salary = span.text.strip()
+                    print("salary",salary)
             post_date = calculate_post_date(post_days)
 
-            salary_span = listing.find('span', {'aria-label': lambda x: x and 'Salary ' in x})
-            salary = ""
-            if salary_span:
-                salary = salary_span.text.strip()
-
-            job_service_div = listing.find('div', class_='B8oxKe BQC79e xXyUwe')
+            job_service_div = listing.find('div', class_='yVRmze-s2gQvd nNzjpf-cS4Vcb-PvZLI-DklQXe')
             job_service_portals = []
-            
             if job_service_div:
                 anchors = job_service_div.find_all('a')
                 for a in anchors:
@@ -224,50 +240,42 @@ async def process_job_elements(job_elements,location_data):
                     url = a['href']
                     job_service_portal = {'applyAt': apply_at, 'url': url}
                     job_service_portals.append(job_service_portal)
-
-            unique_id = f"{id_count}_{position_name[:6]}_{company_name[:6]}_{city}_{state}"
-            id_count +=1
-
-            # Extract qualifications, responsibilties and benefits
-            qualifications = None
-            responsibilties = None
-            benefits = None
-            qualifications_divs = listing.find_all('div', class_='JxVj3d')
-            qualifications_count = 0
-            responsibilities_count = 0
-            benefits_count = 0
-
-            latitude, longitude = get_latitude_longitude(city, state, location_data)
-
+            unique_id = f"{position_name[:6]}_{company_name[:6]}_{city}_{state}"
+            # unique_id = f"{id_count}_{position_name[:6]}_{company_name[:6]}_{city}_{state}"
             
 
-            for div in qualifications_divs:
-                header_div = div.find('div', class_='iflMsb')
-                if header_div and header_div.text.strip() == 'Qualifications':
-                    qualifications_count += 1
-                    if qualifications_count == 2:
-                        qualifications = div.text.strip()
-                        # break
-                if header_div and header_div.text.strip() == 'Responsibilities':
-                    responsibilities_count += 1
-                    if responsibilities_count == 2:
-                        responsibilties = div.text.strip()
-                        # break
-                if header_div and header_div.text.strip() == 'Benefits':
-                    benefits_count += 1
-                    if benefits_count == 2:
-                        benefits = div.text.strip()
-                        # break
-            # print("qualifications",qualifications)
-            # print("responsibilties",responsibilties)
-            # print("benefits",benefits)
+            h4s = listing.find_all('h4', class_='yVFmQd cS4Vcb-pGL6qe-KUvarc')
+
+            qualifications = []
+            responsibilities = []
+            benefits = []
+            for h4 in h4s : 
+                if h4 and h4.text.strip() == 'Qualifications':
+                    qualifications_ul = h4.find_next('ul')
+                    if qualifications_ul:
+                        qualifications = [li.text.strip() for li in qualifications_ul.find_all('li')]
+                        # print("qualifications",qualifications)  
+
+                elif h4 and h4.text.strip() == 'Benefits':
+                    benefits_ul = h4.find_next('ul')
+                    if benefits_ul:
+                        benefits = [li.text.strip() for li in benefits_ul.find_all('li')]
+                        # print("benefits",benefits) 
+
+                elif h4 and h4.text.strip() == 'Responsibilities':
+                    responsibilites_ul = h4.find_next('ul')
+                    if responsibilites_ul:
+                        responsibilities = [li.text.strip() for li in responsibilites_ul.find_all('li')]
+                        # print("responsibilites",responsibilities)          
+            latitude, longitude, state_name = get_latitude_longitude(city, state, location_data)
+
             data = {
                 'unique_id': clean_unique_id(unique_id),
                 'title': position_name,
                 'employer': company_name,
                 'description': {
                     'qualifications': qualifications,
-                    'responsibilities': responsibilties,
+                    'responsibilities': responsibilities,
                     'benefits': benefits,
                     'job_description': position_description
                 },
@@ -275,7 +283,7 @@ async def process_job_elements(job_elements,location_data):
                     "location": clean_location(location),
                     "location_raw": "",
                     "city": city,
-                    "state": state,
+                    "state": state_name,
                     "country": country,
                     "geo_lat": latitude,
                     "geo_lang": longitude,
@@ -286,8 +294,13 @@ async def process_job_elements(job_elements,location_data):
                 'salary': salary,
                 "job_service_portals": job_service_portals
             }
-            # print("data",data)
-            raw_job_data.append(data)
+            if (state == state_code and city.lower() == city_info.lower()):
+                serial_number = id_count
+                data['id'] = serial_number
+                id_count +=1
+                raw_job_data.append(data)
+            else :
+                print("ignored",unique_id)
         except Exception as e:
             print(f"Error processing listing: {e}")
             continue
@@ -334,29 +347,65 @@ async def scrape_page(url, context, location_data):
 
         await page.goto(url)
         time.sleep(2)
-        # await page.screenshot(path='screenshot.png')
+        # Scroll until the end of the page
+        previous_height = None
+        while True:
+            current_height = await page.evaluate('document.body.scrollHeight')
+            if previous_height == current_height:
+                break
+            previous_height = current_height
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+            await page.wait_for_timeout(2000)  # Wait for 2 seconds after scrolling
 
-
-        # Check if the element exists and has the text "Sign in"
-        sign_in_element = await page.query_selector('//a[contains(@class, "gb_Ea") and contains(@class, "gb_wd") and contains(@class, "gb_nd") and contains(@class, "gb_ne")]')
-        if sign_in_element:
-            sign_in_text = await sign_in_element.inner_text()
-            if sign_in_text.strip() != "Sign in":
-                raise Exception(f"Proxy language is not English: Sign-in button text is '{sign_in_text}'")
+        # Scroll back to the top of the page
+        await page.evaluate('window.scrollTo(0, 0)')
+        await page.wait_for_timeout(2000)  # Wait for 2 seconds after scrolling to the top
+        try:
+            sign_in_element = await page.query_selector('//a[@aria-label="Sign in"]')
+            print("sign_in_element", sign_in_element)
             
-        # Check if the element exists
-        element_handle = await page.query_selector('div.zxU94d.gws-plugins-horizon-jobs__tl-lvc')
-        if not element_handle:
-            raise Exception(f"Element with selector 'div.zxU94d.gws-plugins-horizon-jobs__tl-lvc' not found on {url}")
+            if sign_in_element is None:
+                raise Exception("Sign in element not found")
+                
+        except Exception as e:
+            print(f"Error finding or handling sign in element: {e}")
+            raise e
 
-        # logger.info(f"Element with selector 'div.zxU94d.gws-plugins-horizon-jobs__tl-lvc' found, scrolling down")
-        print(f"Element with selector 'div.zxU94d.gws-plugins-horizon-jobs__tl-lvc' found, scrolling down")
+        jobs = []   
+        # await process_job_listings(page)      
+        div_elements = await page.query_selector_all('div.tNxQIb.PUpOsf')
+        # print("div_elements",div_elements)
+        for div in div_elements:
+            
+            try :
+                await div.click(timeout=30000)
+                await page.wait_for_selector('div.BIB1wf.EIehLd.fHE6De.Emjfjd', timeout=300000)
+                job_elements = await page.query_selector_all('div.BIB1wf.EIehLd.fHE6De.Emjfjd')
+                for job in job_elements:
+                # Extract the HTML content of the job element
+                    job_html = await job.inner_html()
 
-        job_elements = await auto_scroll(page, 'div.zxU94d.gws-plugins-horizon-jobs__tl-lvc')
-        raw_data = await process_job_elements(job_elements,location_data)
-        # print("data",raw_data)
-        # write_to_file(data, 'job_data.json')
-        # await page.close()
+                    # Parse the HTML content with BeautifulSoup
+                    soup = BeautifulSoup(job_html, 'html.parser')
+
+                    # Push the parsed data (soup) into the jobs array
+                    jobs.append(soup)
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
+                break
+               
+            
+            if len(jobs) == 0:
+                raise Exception("No job elements were found and processed.")
+                # close_button = await page.query_selector("button.uj1Jfd.iM6qI")
+                # if close_button:
+                #     print("close_button", close_button)
+                #     await close_button.click()
+                #     time.sleep(10)
+                # else:
+                #     print("Close button not found!")
+
+        raw_data = await process_job_elements(jobs, location_data, url)
         return raw_data
         
     
@@ -372,7 +421,8 @@ async def scrape_page(url, context, location_data):
 
     # await page.close()
 async def handle_browser_instance(urls, proxy, location_data):
-    chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    chrome_path = "/opt/google/chrome/google-chrome"
+    # chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     async with async_playwright() as p:
         while True:
             try:
@@ -394,22 +444,32 @@ async def handle_browser_instance(urls, proxy, location_data):
                 "--window-position=0,0",
                 "--ignore-certifcate-errors",
                 "--ignore-certifcate-errors-spki-list",
+                "--js-flags=--max-old-space-size=16384",
+                "--disable-gpu",
+                "--default-heap-size=4096",
+                "--disable-site-isolation-trials",
+                "--renderer-process-limit=4",
+                "--blink-settings=imagesEnabled=false",  # Disable images
+                "--blink-settings=stylesEnabled=false",  # Disable styles
+                "--disable-background-networking",  # Disable background networking
+                "--enable-low-end-device-mode"  # Enable low-end device mode
             ],
                 )
                 # iphone = Playwright.devices["iPhone 6"]
                 # context = await browser.new_context(**iphone)
                 context = await browser.new_context(bypass_csp=True,
     viewport={'width': 800, 'height': 600})
-                main_page = await context.new_page()
-                main_page.route(re.compile(r"\.(jpg|png|svg)$"), 
-		lambda route: route.abort()) 
-                await main_page.goto('about:blank')
+                await context.clear_cookies()
+        #         main_page = await context.new_page()
+        #         main_page.route(re.compile(r"\.(jpg|png|svg)$"), 
+		# lambda route: route.abort()) 
+        #         await main_page.goto('about:blank')
                 break
             except Exception as e:
                 # logger.error(f"Failed to launch Chrome browser with proxy: {e}")
                 print(f"Failed to launch Chrome browser with proxy: {e}")
 
-                time.sleep(2)  # Wait before retrying
+                time.sleep(1)  # Wait before retrying
 
         for url in urls:
             while True:
@@ -457,8 +517,8 @@ async def handle_browser_instance(urls, proxy, location_data):
                             )
                             context = await browser.new_context(bypass_csp=True,
     viewport={'width': 800, 'height': 600})
-                            main_page = await context.new_page()
-                            await main_page.goto('about:blank')
+                            # main_page = await context.new_page()
+                            # await main_page.goto('about:blank')
                             break
                         except Exception as e:
                             # logger.error(f"Failed to re-launch Chrome browser with proxy: {e}")
@@ -469,30 +529,46 @@ async def handle_browser_instance(urls, proxy, location_data):
         await context.close()
         await browser.close()
 
+def get_user_input():
+    city = input("Enter the city name to start from: ")
+    state = input("Enter the state name to start from: ")
+    start_id = input("Enter the unique_id to start from (press Enter to start from the beginning): ")
+    return city.strip(), state.strip(), start_id.strip()
 async def scrape_and_save_raw_data():
-    # with open('data.json', 'r') as f:
-    #     cities_json = json.load(f)
-    location_data = []
+    global id_count  # Make sure to use the global id_count variable
+
     with open('output.json', 'r') as f:
         location_data = json.load(f)
+    
+    start_city, start_state, start_id = get_user_input()
+    
+    # Find the starting index for location
+    start_index = next((i for i, city_data in enumerate(location_data) 
+                        if city_data['name'].lower() == start_city.lower() 
+                        and city_data['state_name'].lower() == start_state.lower()), 0)
+    
     urls = [
         f"https://www.google.com/search?q=jobs+in+{city_data['name']}+{city_data['state_name']}&ibp=htl;jobs&sa=X"
-        for city_data in location_data
+        for city_data in location_data[start_index:]
         if city_data.get('name') and city_data.get('state_name')
     ]
     # print(urls,"urls")
+    if start_id:
+        id_count = int(start_id)
+    else:
+        id_count = 1
 
     proxy = {
-        'server': 'proxy.apify.com:8000',  # Replace with your proxy server
+        'server': '51.159.188.105:9000',  # Replace with your proxy server
         # 'server': f"http://groups-RESIDENTIAL:{'apify_proxy_dsGYtfqZ67wRGZRK6IYVzqbAgTbLMz1laqBi'}@proxy.apify.com:8000",
-        'username': 'groups-RESIDENTIAL',
-        'password': 'apify_proxy_dsGYtfqZ67wRGZRK6IYVzqbAgTbLMz1laqBi'
+        'username': 'geonode_NzxlzzqKgj-country-us',
+        'password': '6bdefea6-c04a-44cd-b055-44f76285c314'
     }
     # Split URLs into chunks of 10
     chunks = [urls[i:i + 20] for i in range(0, len(urls), 20)]
     
     # Limit to 10 concurrent browser instances
-    semaphore = asyncio.Semaphore(2)
+    semaphore = asyncio.Semaphore(1)
 
     job_data_list = []
     async def semaphore_wrapper(chunk):
@@ -515,7 +591,7 @@ async def scrape_and_save_raw_data():
     # monitor_task.cancel()
 async def main():
     # Initialize batch number
-    batch_number = 1
+    batch_number = 5
 
     while True:
         # Create a filename based on the current batch number
@@ -527,11 +603,27 @@ async def main():
 
         # Call the original function
         await scrape_and_save_raw_data()
+        time.sleep(2400)
+        completed_dir = os.path.join('allData', 'xmlData', f'batch{batch_number}')
 
+        # Create the directory if it doesn't exist
+        os.makedirs(completed_dir, exist_ok=True)
+
+        # Write the completed.txt file
+        completed_file_path = os.path.join(completed_dir, 'completed.txt')
+        with open(completed_file_path, 'w') as f:
+            f.write("Batch processing completed.")
         # Increment the batch number for the next run
         batch_number += 1
+        with open('last_processed.txt', 'w') as f:
+            f.write(str(-1))
+        # Delete the raw_job_data.json file if it exists
+        if os.path.exists('raw_job_data.json'):
+            os.remove('raw_job_data.json')
+            print(f"{'raw_job_data.json'} deleted.")
 
         # Sleep for one week
         await asyncio.sleep(7 * 24 * 60 * 60)
 if __name__ == '__main__':
     asyncio.run(main())
+
